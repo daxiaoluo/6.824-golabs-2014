@@ -28,22 +28,27 @@ func (mr *MapReduce) KillWorkers() *list.List {
   return l
 }
 
-//func (mr *MapReduce) dispatchWorker() {
-//  for mr.alive {
-//    req := <- mr.request
-//    findIdel := false
-//    for !findIdel {
-//      for worker := range mr.Workers {
-//        if mr.Workers[worker].idle {
-//          mr.Workers[worker].idle = false
-//          req <- worker
-//          findIdel = true
-//          break
-//        }
-//      }
-//    }
-//  }
-//}
+func (mr *MapReduce) dispatchWorker() {
+  for mr.alive {
+    req := <-mr.request
+    go func(r chan string) {
+      findIdel := false
+      for !findIdel {
+        mr.mu.Lock()
+        for worker := range mr.Workers {
+          if mr.Workers[worker].idle {
+            fmt.Printf("Worker %s is idle\n", worker)
+            mr.Workers[worker].idle = false
+            req <- worker
+            findIdel = true
+            break
+          }
+        }
+        mr.mu.Unlock()
+      }
+    }(req)
+  }
+}
 
 func CreateDoJobArgs(file string, operation JobType, jobNumber int, numOtherPhase int) *DoJobArgs {
   args := &DoJobArgs{}
@@ -54,23 +59,6 @@ func CreateDoJobArgs(file string, operation JobType, jobNumber int, numOtherPhas
   return args
 }
 
-func TryDispatchWorker(mr *MapReduce, requests []chan string) []chan string {
-  mr.mu.Lock()
-  defer mr.mu.Unlock()
-  if len(requests) == 0 {
-    return requests
-  }
-
-  for worker := range mr.Workers {
-    if mr.Workers[worker].idle {
-      mr.Workers[worker].idle = false
-      request := requests[0]
-      request <- worker
-      return requests[1:]
-    }
-  }
-  return requests
-}
 
 func (mr *MapReduce) RunMaster() *list.List {
   // Your code here
@@ -79,7 +67,6 @@ func (mr *MapReduce) RunMaster() *list.List {
   workerPut := make(chan string)
   workerRm := make(chan string)
   go func() {
-    queue := []chan string{}
     for {
       select {
       case registedWorkerName := <- mr.registerChannel:
@@ -87,11 +74,9 @@ func (mr *MapReduce) RunMaster() *list.List {
         mr.Workers[registedWorkerName] = &WorkerInfo{registedWorkerName, true}
         mr.mu.Unlock()
         fmt.Printf("Register a new worker:%s\n", registedWorkerName)
-        queue = TryDispatchWorker(mr, queue)
       case getWorkerRequest := <- workerGet:
         fmt.Printf("Recieve get worker request\n")
-        queue = append(queue, getWorkerRequest)
-        queue = TryDispatchWorker(mr, queue)
+        mr.request <- getWorkerRequest
       case putWorkerName := <- workerPut:
         mr.mu.Lock()
         _, ok := mr.Workers[putWorkerName]
@@ -103,7 +88,6 @@ func (mr *MapReduce) RunMaster() *list.List {
           mr.Workers[putWorkerName].idle = true
         }
         mr.mu.Unlock()
-        queue = TryDispatchWorker(mr, queue)
       case rmWorkerName := <- workerRm:
         mr.mu.Lock()
         fmt.Printf("RM worker:%s\n", rmWorkerName)
@@ -113,7 +97,7 @@ func (mr *MapReduce) RunMaster() *list.List {
     }
   }()
 
-  //go mr.dispatchWorker()
+  go mr.dispatchWorker()
 
   mapWaitChannel := make(chan struct{}, mr.nMap)
   reduceWaitChannel := make(chan struct{}, mr.nReduce)
