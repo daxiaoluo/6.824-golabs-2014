@@ -17,14 +17,78 @@ type ViewServer struct {
 
 
   // Your declarations here.
+  view View
+  primaryAck uint
+  primaryTick uint
+  backupTick uint
+  currentTick uint
 }
 
 //
 // server Ping RPC handler.
 //
+
+func (vs *ViewServer) HasPrimary() bool {
+  return vs.view.Primary != ""
+}
+
+func (vs *ViewServer) HasBackup() bool {
+  return vs.view.Backup != ""
+}
+
+func (vs *ViewServer) Acked() bool {
+  return vs.view.Viewnum == vs.primaryAck
+}
+
+func (vs *ViewServer) IsPrimary(name string) bool {
+  return vs.view.Primary == name
+}
+
+func (vs *ViewServer) IsBackup(name string) bool {
+  return vs.view.Backup == name
+}
+
+func (vs *ViewServer) PromoteBackup() {
+  if vs.HasBackup() {
+    vs.view.Viewnum++
+    vs.view.Primary = vs.view.Backup
+    vs.view.Backup = ""
+    vs.primaryAck = 0
+    vs.primaryTick = vs.backupTick
+  }
+}
+
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
   // Your code here.
+  vs.mu.Lock()
+
+  if !vs.HasPrimary() && !vs.IsBackup(args.Me){
+    vs.view.Primary = args.Me
+    vs.view.Viewnum++
+  } else if vs.IsPrimary(args.Me) {
+    if args.Viewnum == 0 {
+      vs.PromoteBackup()
+    } else {
+      vs.primaryAck = args.Viewnum
+      vs.primaryTick = vs.currentTick
+    }
+  } else if !vs.HasBackup() && vs.Acked(){
+    vs.view.Backup = args.Me
+    vs.view.Viewnum++
+    vs.backupTick = vs.currentTick
+  } else if vs.IsBackup(args.Me) {
+    if args.Viewnum == 0 {
+      if vs.Acked() {
+        vs.view.Viewnum++
+        vs.backupTick = vs.currentTick
+      }
+    } else {
+      vs.backupTick = vs.currentTick
+    }
+  }
+  reply.View = vs.view
+  vs.mu.Unlock()
 
   return nil
 }
@@ -35,6 +99,9 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 
   // Your code here.
+  vs.mu.Lock()
+  reply.View = vs.view
+  vs.mu.Unlock()
 
   return nil
 }
@@ -48,6 +115,16 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 func (vs *ViewServer) tick() {
 
   // Your code here.
+  vs.mu.Lock()
+  vs.currentTick++
+  if vs.currentTick - vs.primaryTick > DeadPings && vs.Acked(){
+    vs.PromoteBackup()
+  }
+  if vs.HasBackup() && vs.currentTick - vs.backupTick > DeadPings && vs.Acked() {
+    vs.view.Viewnum++
+    vs.view.Backup = ""
+  }
+  vs.mu.Unlock()
 }
 
 //
@@ -64,6 +141,11 @@ func StartServer(me string) *ViewServer {
   vs := new(ViewServer)
   vs.me = me
   // Your vs.* initializations here.
+  vs.mu = sync.Mutex{}
+  vs.view = View{}
+  vs.backupTick = 0
+  vs.primaryAck = 0
+  vs.backupTick = 0
 
   // tell net/rpc about our RPC server and handlers.
   rpcs := rpc.NewServer()
