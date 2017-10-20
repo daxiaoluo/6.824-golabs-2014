@@ -63,7 +63,7 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
   // Your code here.
   vs.mu.Lock()
 
-  if !vs.HasPrimary() && !vs.IsBackup(args.Me){ // start to choose the primary server
+  if !vs.HasPrimary() && !vs.IsBackup(args.Me) && vs.Acked(){ // start to choose the primary server
     vs.view.Primary = args.Me
     vs.view.Viewnum++
   }  else if !vs.HasBackup() && vs.Acked(){ // start to choose the backup server
