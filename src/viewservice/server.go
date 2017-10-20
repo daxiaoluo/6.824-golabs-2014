@@ -53,7 +53,7 @@ func (vs *ViewServer) PromoteBackup() {
     vs.view.Viewnum++
     vs.view.Primary = vs.view.Backup
     vs.view.Backup = ""
-    vs.primaryAck = 0
+    //vs.primaryAck = 0
     vs.primaryTick = vs.backupTick
   }
 }
@@ -63,29 +63,22 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
   // Your code here.
   vs.mu.Lock()
 
-  if !vs.HasPrimary() && !vs.IsBackup(args.Me){
+  if !vs.HasPrimary() && !vs.IsBackup(args.Me){ // start to choose the primary server
     vs.view.Primary = args.Me
     vs.view.Viewnum++
-  } else if vs.IsPrimary(args.Me) {
-    if args.Viewnum == 0 {
-      vs.PromoteBackup()
-    } else {
-      vs.primaryAck = args.Viewnum
-      vs.primaryTick = vs.currentTick
-    }
-  } else if !vs.HasBackup() && vs.Acked(){
+  }  else if !vs.HasBackup() && vs.Acked(){ // start to choose the backup server
     vs.view.Backup = args.Me
     vs.view.Viewnum++
     vs.backupTick = vs.currentTick
-  } else if vs.IsBackup(args.Me) {
-    if args.Viewnum == 0 {
-      if vs.Acked() {
-        vs.view.Viewnum++
-        vs.backupTick = vs.currentTick
-      }
+  } else if vs.IsPrimary(args.Me) {
+    if args.Viewnum == 0 && vs.Acked() { // primary server restart, avoid split-brain
+      vs.PromoteBackup()
     } else {
-      vs.backupTick = vs.currentTick
+      vs.primaryAck = args.Viewnum // primary server acked the current view
+      vs.primaryTick = vs.currentTick
     }
+  } else if vs.IsBackup(args.Me) {
+    vs.backupTick = vs.currentTick
   }
   reply.View = vs.view
   vs.mu.Unlock()
