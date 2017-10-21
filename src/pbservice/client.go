@@ -2,7 +2,11 @@ package pbservice
 
 import "viewservice"
 import "net/rpc"
-import "fmt"
+import (
+  "fmt"
+  "time"
+  "sync/atomic"
+)
 
 // You'll probably need to uncomment these:
 // import "time"
@@ -10,12 +14,14 @@ import "fmt"
 // import "math/big"
 
 
+var id int64 = -1
+
 
 type Clerk struct {
   vs *viewservice.Clerk
   // Your declarations here
+  view viewservice.View
 }
-
 
 func MakeClerk(vshost string, me string) *Clerk {
   ck := new(Clerk)
@@ -25,6 +31,15 @@ func MakeClerk(vshost string, me string) *Clerk {
   return ck
 }
 
+func getIncrementId() int64 {
+  return atomic.AddInt64(&id, 1)
+}
+
+func (ck *Clerk) UpdateView() {
+  view, _ := ck.vs.Get()
+  ck.view = view
+
+}
 
 //
 // call() sends an RPC to the rpcname handler on server srv
@@ -69,8 +84,19 @@ func call(srv string, rpcname string,
 func (ck *Clerk) Get(key string) string {
 
   // Your code here.
-
-  return "???"
+  finshed := false
+  args := GetArgs{key, getIncrementId()}
+  reply := GetReply{}
+  for !finshed {
+    ok := call(ck.view.Primary, "PBServer.Get", &args, &reply)
+    if !ok || reply.Err != OK {
+      ck.UpdateView()
+      time.Sleep(time.Second)
+    } else {
+      finshed = true
+    }
+  }
+  return reply.Value
 }
 
 //
@@ -80,7 +106,23 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
 
   // Your code here.
-  return "???"
+  args := PutArgs{key, value, dohash, getIncrementId()}
+  reply := PutReply{}
+  finshed := false
+  for !finshed {
+    ok := call(ck.view.Primary, "PBServer.Put", &args, &reply)
+    if !ok || reply.Err != OK {
+      ck.UpdateView()
+      time.Sleep(time.Second)
+    } else {
+      finshed = true
+    }
+  }
+  v := ""
+  if dohash {
+    v = reply.PreviousValue
+  }
+  return v
 }
 
 func (ck *Clerk) Put(key string, value string) {

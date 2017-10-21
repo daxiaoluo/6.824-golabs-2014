@@ -9,7 +9,10 @@ import "viewservice"
 import "os"
 import "syscall"
 import "math/rand"
-import "sync"
+import (
+  "sync"
+  "strconv"
+)
 
 //import "strconv"
 
@@ -32,15 +35,141 @@ type PBServer struct {
   done sync.WaitGroup
   finish chan interface{}
   // Your declarations here.
+  store map[string]string
+  operations map[int64]string
+  view  viewservice.View
+  mu    sync.Mutex
+}
+
+func (pb *PBServer) isPrimary() bool {
+  return pb.me == pb.view.Primary
+}
+
+func (pb *PBServer) hasPrimary() bool {
+  return pb.view.Primary != ""
+}
+
+func (pb *PBServer) isBackup() bool {
+  return pb.me == pb.view.Backup
+}
+
+func (pb *PBServer) hasBackup() bool {
+  return pb.view.Backup != ""
+}
+
+func (pb *PBServer) ProcessSnapshot(args *SnapshotArgs, reply *SnapshotReply) error {
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+  if pb.isBackup() {
+    pb.store = args.Store
+    pb.operations = args.Operations
+    reply.Err = OK
+    return nil
+  } else {
+    reply.Err = ErrWrongServer
+    return nil
+  }
+}
+
+func (pb *PBServer) doPut(args *PutArgs, reply *PutReply) {
+  if (args.DoHash) {
+    reply.PreviousValue = pb.store[args.Key]
+    pb.operations[args.Id] = reply.PreviousValue
+    pb.store[args.Key] = strconv.Itoa(int(hash(pb.store[args.Key]+ args.Value)))
+  } else {
+    pb.store[args.Key] = args.Value
+    pb.operations[args.Id]= args.Value
+  }
+}
+
+
+func (pb *PBServer) ProcessRedirectPut(args *PutArgs, reply *PutReply) error {
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+
+  if !pb.isBackup() {
+    reply.Err = ErrWrongServer
+  } else {
+    _, ok := pb.operations[args.Id]
+    if !ok {
+      pb.doPut(args, reply)
+    }
+    reply.Err = OK
+  }
+  return nil
 }
 
 func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
   // Your code here.
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+
+  if !pb.isPrimary() {
+    reply.Err = ErrWrongServer
+    return nil
+  }
+
+  if value, ok := pb.operations[args.Id]; ok {
+    if args.DoHash {
+      reply.PreviousValue = value
+    }
+    reply.Err = OK
+    return nil
+  }
+
+  if pb.hasBackup() {
+    ok := call(pb.view.Backup, "PBServer.ProcessRedirectPut", args, reply)
+    if !ok || reply.Err != OK {
+      reply.Err = ErrWrongServer
+      return nil
+    }
+  }
+
+  pb.doPut(args, reply)
+  reply.Err = OK
+
+  return nil
+}
+
+
+func (pb *PBServer) ProcessRedirectGet(args *GetArgs, reply *GetReply) error {
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+  if !pb.isBackup() {
+    reply.Err = ErrWrongServer
+  } else {
+    reply.Err = OK
+  }
   return nil
 }
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
   // Your code here.
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+  if !pb.isPrimary() {
+    reply.Err = ErrWrongServer
+    return nil
+  }
+
+  if value, ok := pb.operations[args.Id]; ok {
+    reply.Value = value
+    reply.Err = OK
+    return nil
+  }
+
+  if pb.hasBackup() {
+    ok := call(pb.view.Backup, "PBServer.ProcessRedirectGet", args, reply) // avoid when call backup, the view had been changed
+    if !ok || reply.Err != OK {
+      reply.Err = ErrWrongServer
+      return nil
+    }
+  }
+
+  reply.Err = OK
+  reply.Value = pb.store[args.Key]
+  pb.operations[args.Id] = reply.Value
+
   return nil
 }
 
@@ -48,6 +177,31 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 // ping the viewserver periodically.
 func (pb *PBServer) tick() {
   // Your code here.
+  pb.mu.Lock()
+  defer pb.mu.Unlock()
+  v, _ := pb.vs.Ping(pb.view.Viewnum)
+
+  if v.Primary == pb.me && pb.view.Viewnum == 0 { // init the Primary
+    pb.view = v
+  }
+
+  if pb.isPrimary() {
+    if v.Backup != pb.view.Backup && v.Backup != "" { // Backup changed
+      snapshotArgs := SnapshotArgs{pb.store, pb.operations}
+      var snapshotReply SnapshotReply
+      ok := call(v.Backup, "PBServer.ProcessSnapshot", &snapshotArgs, &snapshotReply)
+      if !ok || snapshotReply.Err != OK { // copy to backup failed, so this view can't be acked
+        log.Println("Failed to copy the data to backup(%s)", v.Backup)
+      } else {
+        pb.view = v
+      }
+    } else {
+      pb.view = v
+    }
+  } else {
+    pb.view = v
+  }
+
 }
 
 
@@ -65,6 +219,9 @@ func StartServer(vshost string, me string) *PBServer {
   pb.vs = viewservice.MakeClerk(me, vshost)
   pb.finish = make(chan interface{})
   // Your pb.* initializations here.
+  pb.view = viewservice.View{}
+  pb.operations = make(map[int64]string)
+  pb.store = make(map[string]string)
 
   rpcs := rpc.NewServer()
   rpcs.Register(pb)

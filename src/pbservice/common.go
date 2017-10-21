@@ -14,6 +14,7 @@ type PutArgs struct {
   Value string
   DoHash bool // For PutHash
   // You'll have to add definitions here.
+  Id int64
 
   // Field names must start with capital letters,
   // otherwise RPC will break.
@@ -27,6 +28,7 @@ type PutReply struct {
 type GetArgs struct {
   Key string
   // You'll have to add definitions here.
+  Id int64
 }
 
 type GetReply struct {
@@ -34,6 +36,14 @@ type GetReply struct {
   Value string
 }
 
+type SnapshotArgs struct {
+  Store map[string]string
+  Operations map[int64]string
+}
+
+type SnapshotReply struct{
+  Err Err
+}
 
 // Your RPC definitions here.
 

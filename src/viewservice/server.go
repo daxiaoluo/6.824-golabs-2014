@@ -7,7 +7,9 @@ import "log"
 import "time"
 import "sync"
 import "fmt"
-import "os"
+import (
+  "os"
+)
 
 type ViewServer struct {
   mu sync.Mutex
@@ -62,16 +64,17 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
   // Your code here.
   vs.mu.Lock()
+  defer vs.mu.Unlock()
 
   if !vs.HasPrimary() && !vs.IsBackup(args.Me) && vs.Acked(){ // start to choose the primary server
     vs.view.Primary = args.Me
     vs.view.Viewnum++
-  }  else if !vs.HasBackup() && vs.Acked(){ // start to choose the backup server
+  }  else if !vs.HasBackup() && !vs.IsPrimary(args.Me) && vs.Acked(){ // start to choose the backup server
     vs.view.Backup = args.Me
     vs.view.Viewnum++
     vs.backupTick = vs.currentTick
   } else if vs.IsPrimary(args.Me) {
-    if args.Viewnum == 0 && vs.Acked() { // primary server restart, avoid split-brain
+    if args.Viewnum == 0 && vs.Acked() { // primary server restart
       vs.PromoteBackup()
     } else {
       vs.primaryAck = args.Viewnum // primary server acked the current view
@@ -81,7 +84,6 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
     vs.backupTick = vs.currentTick
   }
   reply.View = vs.view
-  vs.mu.Unlock()
 
   return nil
 }
@@ -93,8 +95,8 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 
   // Your code here.
   vs.mu.Lock()
+  defer vs.mu.Unlock()
   reply.View = vs.view
-  vs.mu.Unlock()
 
   return nil
 }
@@ -109,6 +111,7 @@ func (vs *ViewServer) tick() {
 
   // Your code here.
   vs.mu.Lock()
+  defer vs.mu.Unlock()
   vs.currentTick++
   if vs.currentTick - vs.primaryTick > DeadPings && vs.Acked(){
     vs.PromoteBackup()
@@ -117,7 +120,6 @@ func (vs *ViewServer) tick() {
     vs.view.Viewnum++
     vs.view.Backup = ""
   }
-  vs.mu.Unlock()
 }
 
 //
