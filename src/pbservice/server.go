@@ -93,6 +93,9 @@ func (pb *PBServer) ProcessRedirectPut(args *PutArgs, reply *PutReply) error {
     _, ok := pb.operations[args.Id]
     if !ok {
       pb.doPut(args, reply)
+    } else {
+      fmt.Println("Reapted redirect 'put' request...")
+      pb.doPut(args, reply)
     }
     reply.Err = OK
   }
@@ -138,6 +141,14 @@ func (pb *PBServer) ProcessRedirectGet(args *GetArgs, reply *GetReply) error {
   if !pb.isBackup() {
     reply.Err = ErrWrongServer
   } else {
+    value, ok := pb.operations[args.Id]
+    if !ok {
+      reply.Value = pb.store[args.Key]
+      pb.operations[args.Id] = reply.Value
+    } else {
+      reply.Value = value
+      fmt.Println("Reapted redirect 'get' request...")
+    }
     reply.Err = OK
   }
   return nil
@@ -163,14 +174,16 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
     if !ok || reply.Err != OK {
       reply.Err = ErrWrongServer
       return nil
+    } else {
+      pb.operations[args.Id] = reply.Value
+      return nil
     }
+  } else {
+    reply.Err = OK
+    reply.Value = pb.store[args.Key]
+    pb.operations[args.Id] = reply.Value
+    return nil
   }
-
-  reply.Err = OK
-  reply.Value = pb.store[args.Key]
-  pb.operations[args.Id] = reply.Value
-
-  return nil
 }
 
 
@@ -181,25 +194,20 @@ func (pb *PBServer) tick() {
   defer pb.mu.Unlock()
   v, _ := pb.vs.Ping(pb.view.Viewnum)
 
-  if v.Primary == pb.me && pb.view.Viewnum == 0 { // init the Primary
+  if pb.view.Viewnum != v.Viewnum { // view has been changed
+    preView := pb.view
     pb.view = v
-  }
-
-  if pb.isPrimary() {
-    if v.Backup != pb.view.Backup && v.Backup != "" { // Backup changed
-      snapshotArgs := SnapshotArgs{pb.store, pb.operations}
-      var snapshotReply SnapshotReply
-      ok := call(v.Backup, "PBServer.ProcessSnapshot", &snapshotArgs, &snapshotReply)
-      if !ok || snapshotReply.Err != OK { // copy to backup failed, so this view can't be acked
-        log.Println("Failed to copy the data to backup(%s)", v.Backup)
-      } else {
-        pb.view = v
+    if pb.isPrimary() {
+      if pb.hasBackup() {
+        snapshotArgs := SnapshotArgs{pb.store, pb.operations}
+        snapshotReply := SnapshotReply{}
+        ok := call(v.Backup, "PBServer.ProcessSnapshot", &snapshotArgs, &snapshotReply)
+        if !ok || snapshotReply.Err != OK { // copy to backup failed, so this view can't be acked
+          pb.view = preView
+          log.Println("Failed to copy the data to backup(%s)", v.Backup)
+        }
       }
-    } else {
-      pb.view = v
     }
-  } else {
-    pb.view = v
   }
 
 }
