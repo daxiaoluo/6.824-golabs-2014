@@ -93,9 +93,6 @@ func (pb *PBServer) ProcessRedirectPut(args *PutArgs, reply *PutReply) error {
     _, ok := pb.operations[args.Id]
     if !ok {
       pb.doPut(args, reply)
-    } else {
-      fmt.Println("Reapted redirect 'put' request...")
-      pb.doPut(args, reply)
     }
     reply.Err = OK
   }
@@ -141,13 +138,12 @@ func (pb *PBServer) ProcessRedirectGet(args *GetArgs, reply *GetReply) error {
   if !pb.isBackup() {
     reply.Err = ErrWrongServer
   } else {
-    value, ok := pb.operations[args.Id]
+    v, ok := pb.operations[args.Id]
     if !ok {
       reply.Value = pb.store[args.Key]
       pb.operations[args.Id] = reply.Value
     } else {
-      reply.Value = value
-      fmt.Println("Reapted redirect 'get' request...")
+      reply.Value = v // This avoid backup no reply to primary then it retry to redirect get
     }
     reply.Err = OK
   }

@@ -91,7 +91,7 @@ func (ck *Clerk) Get(key string) string {
     ok := call(ck.view.Primary, "PBServer.Get", &args, &reply)
     if !ok || reply.Err != OK {
       ck.UpdateView()
-      time.Sleep(time.Second)
+      time.Sleep(viewservice.PingInterval) // sleep too long will influence the 'TestConcurrentSameUnreliable' test case
     } else {
       finshed = true
     }
